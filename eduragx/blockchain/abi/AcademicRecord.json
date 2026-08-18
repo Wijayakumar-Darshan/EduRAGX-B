@@ -1,0 +1,11 @@
+[
+  {"inputs":[],"stateMutability":"nonpayable","type":"constructor"},
+  {"anonymous":false,"inputs":[{"indexed":true,"internalType":"uint256","name":"recordId","type":"uint256"},{"indexed":true,"internalType":"string","name":"studentId","type":"string"},{"indexed":false,"internalType":"string","name":"reportHash","type":"string"},{"indexed":false,"internalType":"uint256","name":"timestamp","type":"uint256"},{"indexed":false,"internalType":"address","name":"issuer","type":"address"}],"name":"RecordAdded","type":"event"},
+  {"inputs":[{"internalType":"string","name":"studentId","type":"string"},{"internalType":"string","name":"reportHash","type":"string"},{"internalType":"string","name":"reportType","type":"string"}],"name":"addRecord","outputs":[{"internalType":"uint256","name":"id","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+  {"inputs":[{"internalType":"uint256","name":"recordId","type":"uint256"}],"name":"getRecord","outputs":[{"internalType":"string","name":"studentId","type":"string"},{"internalType":"string","name":"reportHash","type":"string"},{"internalType":"string","name":"reportType","type":"string"},{"internalType":"uint256","name":"issuedAt","type":"uint256"},{"internalType":"address","name":"issuer","type":"address"},{"internalType":"bool","name":"revoked","type":"bool"}],"stateMutability":"view","type":"function"},
+  {"inputs":[{"internalType":"string","name":"studentId","type":"string"}],"name":"getStudentRecordIds","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"},
+  {"inputs":[],"name":"owner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+  {"inputs":[{"internalType":"uint256","name":"recordId","type":"uint256"}],"name":"revokeRecord","outputs":[],"stateMutability":"nonpayable","type":"function"},
+  {"inputs":[],"name":"totalRecords","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+  {"inputs":[{"internalType":"uint256","name":"recordId","type":"uint256"},{"internalType":"string","name":"hashToCheck","type":"string"}],"name":"verifyRecordView","outputs":[{"internalType":"bool","name":"matched","type":"bool"}],"stateMutability":"view","type":"function"}
+]

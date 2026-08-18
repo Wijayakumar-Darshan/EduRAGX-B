@@ -1,0 +1,16 @@
+{
+  "name": "eduragx",
+  "version": "1.0.0",
+  "description": "EduRAGX — AI-Powered Explainable Learning & Assessment Platform",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "db:push": "npm run db:push --prefix backend",
+    "db:seed": "npm run db:seed --prefix backend",
+    "db:generate": "npm run db:generate --prefix backend",
+    "db:studio": "npm run db:studio --prefix backend",
+    "build:frontend": "npm run build --prefix frontend"
+  }
+}

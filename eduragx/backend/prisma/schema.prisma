@@ -1,0 +1,199 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                Int                @id @default(autoincrement())
+  name              String
+  email             String             @unique
+  password          String
+  role              Role
+  profilePicture String? @db.MediumText
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  anchoredRecords   BlockchainRecord[] @relation("AnchoredByUser")
+  blockchainRecords BlockchainRecord[] @relation("StudentBlockchainRecords")
+  creditChanges     CreditChangeLog[]
+  notifications     Notification[]
+  parentFeedbacks   ParentFeedback[]   @relation("ParentFeedbacks")
+  teacherFeedbacks  ParentFeedback[]   @relation("TeacherFeedbacks")
+  myChildren        ParentStudent[]    @relation("ParentChildren")
+  myParents         ParentStudent[]    @relation("StudentParents")
+  performances      Performance[]      @relation("StudentPerformance")
+  studentModules    StudentModule[]
+  teacherModules    TeacherModule[]
+
+  @@map("users")
+}
+
+model ParentStudent {
+  parentId  Int
+  studentId Int
+  parent    User @relation("ParentChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  student   User @relation("StudentParents", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@id([parentId, studentId])
+  @@index([studentId], map: "parent_students_studentId_fkey")
+  @@map("parent_students")
+}
+
+model Module {
+  id             Int             @id @default(autoincrement())
+  title          String
+  description    String?         @db.Text
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  studentModules StudentModule[]
+  teacherModules TeacherModule[]
+  topics         Topic[]
+
+  @@map("modules")
+}
+
+model Topic {
+  id          Int          @id @default(autoincrement())
+  moduleId    Int
+  title       String
+  order       Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  assessments Assessment[]
+  module      Module       @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@index([moduleId], map: "topics_moduleId_fkey")
+  @@map("topics")
+}
+
+model Assessment {
+  id               Int               @id @default(autoincrement())
+  topicId          Int
+  title            String
+  description      String?           @db.Text
+  creditValue      Float             @default(10)
+  maxScore         Float             @default(100)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  topic            Topic             @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  creditChangeLogs CreditChangeLog[]
+  performances     Performance[]
+
+  @@index([topicId], map: "assessments_topicId_fkey")
+  @@map("assessments")
+}
+
+model StudentModule {
+  studentId  Int
+  moduleId   Int
+  enrolledAt DateTime @default(now())
+  module     Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  student    User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@id([studentId, moduleId])
+  @@index([moduleId], map: "student_modules_moduleId_fkey")
+  @@map("student_modules")
+}
+
+model TeacherModule {
+  teacherId  Int
+  moduleId   Int
+  assignedAt DateTime @default(now())
+  module     Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  teacher    User     @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@id([teacherId, moduleId])
+  @@index([moduleId], map: "teacher_modules_moduleId_fkey")
+  @@map("teacher_modules")
+}
+
+model Performance {
+  id           Int        @id @default(autoincrement())
+  studentId    Int
+  assessmentId Int
+  score        Float
+  feedback     String?    @db.Text
+  submittedAt  DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  student      User       @relation("StudentPerformance", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, assessmentId])
+  @@index([assessmentId], map: "performances_assessmentId_fkey")
+  @@map("performances")
+}
+
+model CreditChangeLog {
+  id           Int        @id @default(autoincrement())
+  assessmentId Int
+  oldValue     Float
+  newValue     Float
+  reason       String     @db.Text
+  changedById  Int
+  createdAt    DateTime   @default(now())
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  changedBy    User       @relation(fields: [changedById], references: [id])
+
+  @@index([assessmentId], map: "credit_change_logs_assessmentId_fkey")
+  @@index([changedById], map: "credit_change_logs_changedById_fkey")
+  @@map("credit_change_logs")
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  title     String
+  message   String   @db.Text
+  type      String   @default("INFO")
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "notifications_userId_fkey")
+  @@map("notifications")
+}
+
+model ParentFeedback {
+  id        Int      @id @default(autoincrement())
+  parentId  Int
+  teacherId Int
+  studentId Int
+  message   String   @db.Text
+  reply     String?  @db.Text
+  createdAt DateTime @default(now())
+  parent    User     @relation("ParentFeedbacks", fields: [parentId], references: [id])
+  teacher   User     @relation("TeacherFeedbacks", fields: [teacherId], references: [id])
+
+  @@index([parentId], map: "parent_feedbacks_parentId_fkey")
+  @@index([teacherId], map: "parent_feedbacks_teacherId_fkey")
+  @@map("parent_feedbacks")
+}
+
+model BlockchainRecord {
+  id                 Int      @id @default(autoincrement())
+  studentId          Int
+  reportHash         String   @db.VarChar(64)
+  reportType         String   @default("YEAR_END")
+  blockchainRecordId String?  @db.VarChar(78)
+  txHash             String?  @db.VarChar(66)
+  blockNumber        Int?
+  isMock             Boolean  @default(false)
+  anchoredBy         Int
+  createdAt          DateTime @default(now())
+  anchoredByUser     User     @relation("AnchoredByUser", fields: [anchoredBy], references: [id])
+  student            User     @relation("StudentBlockchainRecords", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([anchoredBy], map: "blockchain_records_anchoredBy_fkey")
+  @@index([studentId], map: "blockchain_records_studentId_fkey")
+  @@map("blockchain_records")
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+  PARENT
+}
