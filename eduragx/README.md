@@ -16,7 +16,7 @@ ollama serve
 
 Your `rag-service/.env` is already set up:
 ```dotenv
-DATABASE_URL=mysql://root:SRIshanthi789@localhost:3306/eduragx_db
+DATABASE_URL=mysql://root:PASSWORD@localhost:3306/DATABASE
 LLM_MODEL=llama3.2:1b
 EMBEDDING_MODEL=nomic-embed-text
 ```
