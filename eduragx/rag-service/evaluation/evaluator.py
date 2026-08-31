@@ -1,15 +1,19 @@
 """
-RAG Evaluation Engine for EduRAGX.
+EduRAGX RAG Evaluation Engine.
 
-Reuses the existing VectorStoreManager and RAGEngine so that evaluation
-measures the actual production pipeline, not a separate implementation.
+Evaluates:
+- Precision@5
+- Context Relevance
+- Answer Relevance
+- Groundedness
+- Overall RAG Score
 
-Evaluation results are always stored in the same two files:
-    evaluation/results/evaluation.json
-    evaluation/results/evaluation.csv
+The evaluator intentionally uses GLOBAL semantic retrieval.
 
-These files are updated on every evaluation run. No timestamped files
-are generated.
+Reason:
+The evaluation dataset contains cross-document questions.
+Therefore a hard category filter would incorrectly hide relevant
+documents from the retriever.
 """
 
 from __future__ import annotations
@@ -22,266 +26,647 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.core.vector_store import get_vector_store
-from app.core.rag_engine import get_rag_engine
 from app.config import get_settings
+from app.core.rag_engine import get_rag_engine
+from app.core.vector_store import get_vector_store
 from evaluation.dataset import EVALUATION_DATASET
 
 
 logger = logging.getLogger(__name__)
+
 settings = get_settings()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Results directory
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# RESULTS
+# ═════════════════════════════════════════════════════════════════════════════
 
-RESULTS_DIR = Path(__file__).parent / "results"
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR = (
+    Path(__file__).parent / "results"
+)
+
+RESULTS_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+JSON_PATH = (
+    RESULTS_DIR / "evaluation.json"
+)
+
+CSV_PATH = (
+    RESULTS_DIR / "evaluation.csv"
+)
 
 
-# Fixed result files.
-# These files are updated every time the evaluation runs.
-JSON_PATH = RESULTS_DIR / "evaluation.json"
-CSV_PATH = RESULTS_DIR / "evaluation.csv"
+# ═════════════════════════════════════════════════════════════════════════════
+# NORMALIZATION
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _normalize(
+    text: str,
+) -> str:
+
+    text = str(
+        text or ""
+    ).lower()
+
+    # Normalize common mathematical / formatting variations.
+    text = text.replace(
+        "maxscore",
+        "max score",
+    )
+
+    text = text.replace(
+        "creditvalue",
+        "credit value",
+    )
+
+    text = text.replace(
+        "credit_earned",
+        "credit earned",
+    )
+
+    text = text.replace(
+        "one-on-one",
+        "one on one",
+    )
+
+    text = text.replace(
+        "bi-weekly",
+        "bi weekly",
+    )
+
+    text = re.sub(
+        r"[^a-z0-9%]+",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Metric helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# CONCEPT ALIASES
+# ═════════════════════════════════════════════════════════════════════════════
 
-def _normalize(text: str) -> str:
-    """
-    Lowercase text and collapse whitespace.
-    """
-    return re.sub(r"\s+", " ", text.lower().strip())
+CONCEPT_ALIASES = {
 
+    "score/maxScore": [
+        "score max score",
+        "score divided by max score",
+        "score / maxscore",
+        "score maxscore",
+    ],
+
+    "creditValue": [
+        "credit value",
+        "creditvalue",
+    ],
+
+    "credit_earned": [
+        "credit earned",
+        "credit_earned",
+    ],
+
+    "daily tutoring": [
+        "daily tutoring",
+        "individual daily tutoring",
+    ],
+
+    "reassessment": [
+        "reassessment",
+        "reassessment opportunities",
+        "additional attempts",
+    ],
+
+    "parent notification": [
+        "parent notification",
+        "parent communication",
+    ],
+
+    "weekly progress tracking": [
+        "weekly progress tracking",
+        "monitor improvement weekly",
+        "weekly monitoring",
+    ],
+
+    "supplementary materials": [
+        "supplementary materials",
+        "supplementary learning materials",
+        "additional resources",
+    ],
+
+    "study buddy": [
+        "study buddy",
+        "study buddy pairing",
+        "pairing",
+    ],
+
+    "Business Admin": [
+        "business administration",
+        "business admin",
+    ],
+
+    "75%+": [
+        "75%",
+        "75% or higher",
+        "75 plus",
+    ],
+
+    "within 48 hours": [
+        "48 hours",
+        "within 48 hours",
+    ],
+
+    "3 improvement steps": [
+        "three clear improvement steps",
+        "3 clear improvement steps",
+        "three improvement steps",
+        "3 improvement steps",
+    ],
+
+    "individual tutoring": [
+        "individual tutoring",
+        "one on one tutoring",
+        "individual daily tutoring",
+    ],
+
+    "small group": [
+        "small group tutoring",
+        "small group",
+    ],
+
+    "study plan": [
+        "individual study plan",
+        "study plan",
+        "personalised learning roadmap",
+    ],
+
+    "extra practice": [
+        "extra practice",
+        "additional practice",
+        "additional learning materials",
+    ],
+
+    "HIGH priority": [
+        "high priority",
+    ],
+
+    "MEDIUM": [
+        "medium",
+        "medium monitoring",
+    ],
+
+    "score below 60%": [
+        "score below 60%",
+        "below 60%",
+    ],
+
+    "Below 50%": [
+        "below 50%",
+        "less than 50%",
+    ],
+
+    "50-70%": [
+        "50 70%",
+        "50% and 70%",
+        "between 50% and 70%",
+    ],
+
+    "early warning": [
+        "early warning",
+        "early warning indicators",
+    ],
+
+    "missing submissions": [
+        "missing submissions",
+        "two or more missing submissions",
+    ],
+
+    "declining trend": [
+        "declining trend",
+        "performance is getting worse",
+    ],
+
+    "zero scores": [
+        "zero scores",
+        "zero score",
+    ],
+
+    "Tier 1": [
+        "tier 1",
+    ],
+
+    "Tier 2": [
+        "tier 2",
+    ],
+
+    "Tier 3": [
+        "tier 3",
+    ],
+}
+
+
+def _concept_variants(
+    concept: str,
+) -> List[str]:
+
+    variants = [
+        concept
+    ]
+
+    variants.extend(
+        CONCEPT_ALIASES.get(
+            concept,
+            [],
+        )
+    )
+
+    return [
+        _normalize(item)
+        for item in variants
+        if item
+    ]
+
+
+def _concept_found(
+    text: str,
+    concept: str,
+) -> bool:
+
+    normalized = _normalize(
+        text
+    )
+
+    variants = _concept_variants(
+        concept
+    )
+
+    return any(
+        variant in normalized
+        for variant in variants
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DOCUMENT TEXT
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _doc_text(
+    doc: Any,
+) -> str:
+
+    if hasattr(
+        doc,
+        "page_content",
+    ):
+
+        return str(
+            doc.page_content
+        )
+
+    return str(doc)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PRECISION@K
+# ═════════════════════════════════════════════════════════════════════════════
 
 def calculate_precision_at_k(
     retrieved_docs: List[Any],
     expected_concepts: List[str],
     k: int = 5,
 ) -> float:
-    """
-    Precision@k using concept overlap.
-
-    A retrieved chunk is considered relevant if it contains at least
-    one of the expected concepts using case-insensitive substring matching.
-    """
 
     if not retrieved_docs:
         return 0.0
 
-    top_k = retrieved_docs[:k]
+    top_k = retrieved_docs[
+        :k
+    ]
 
     relevant = 0
 
     for doc in top_k:
-        content = _normalize(
-            doc.page_content
-            if hasattr(doc, "page_content")
-            else str(doc)
+
+        content = _doc_text(
+            doc
         )
 
         if any(
-            _normalize(concept) in content
+            _concept_found(
+                content,
+                concept,
+            )
             for concept in expected_concepts
         ):
+
             relevant += 1
 
-    # Divide by k to keep Precision@k consistent.
-    return relevant / k
+    # Standard Precision@K denominator is K.
+    return round(
+        relevant / k,
+        4,
+    )
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CONCEPT COVERAGE
+# ═════════════════════════════════════════════════════════════════════════════
+
+def calculate_concept_coverage(
+    retrieved_docs: List[Any],
+    expected_concepts: List[str],
+) -> float:
+
+    if not expected_concepts:
+        return 1.0
+
+    context = " ".join(
+        _doc_text(doc)
+        for doc in retrieved_docs
+    )
+
+    hits = sum(
+        1
+        for concept in expected_concepts
+        if _concept_found(
+            context,
+            concept,
+        )
+    )
+
+    return round(
+        hits / len(expected_concepts),
+        4,
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CONTEXT RELEVANCE
+# ═════════════════════════════════════════════════════════════════════════════
 
 def calculate_context_relevance(
     question: str,
     retrieved_docs: List[Any],
     expected_concepts: List[str],
 ) -> float:
-    """
-    Context relevance is the fraction of retrieved documents
-    containing at least one expected concept.
-
-    Range:
-        0.0 - 1.0
-    """
 
     if not retrieved_docs:
         return 0.0
 
-    hits = 0
+    # Relevance of each retrieved document.
+    relevant_documents = 0
 
     for doc in retrieved_docs:
-        content = _normalize(
-            doc.page_content
-            if hasattr(doc, "page_content")
-            else str(doc)
+
+        content = _doc_text(
+            doc
         )
 
-        if any(
-            _normalize(concept) in content
+        concept_hits = sum(
+            1
             for concept in expected_concepts
-        ):
-            hits += 1
+            if _concept_found(
+                content,
+                concept,
+            )
+        )
 
-    return hits / len(retrieved_docs)
+        # A document is considered relevant when
+        # it contains at least one expected concept.
+        if concept_hits > 0:
 
+            relevant_documents += 1
+
+    document_relevance = (
+        relevant_documents
+        / len(retrieved_docs)
+    )
+
+    concept_coverage = (
+        calculate_concept_coverage(
+            retrieved_docs,
+            expected_concepts,
+        )
+    )
+
+    # Balanced context score.
+    score = (
+        0.60 * document_relevance
+        + 0.40 * concept_coverage
+    )
+
+    return round(
+        score,
+        4,
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ANSWER RELEVANCE
+# ═════════════════════════════════════════════════════════════════════════════
 
 def calculate_answer_relevance(
     question: str,
     answer: str,
     expected_concepts: List[str],
 ) -> float:
-    """
-    Simple lexical answer relevance.
 
-    Components:
-        - 0.4 weight for expected concept coverage
-        - 0.3 weight for question-word overlap
-        - 0.3 weight for answer length
-    """
-
-    if not answer or not answer.strip():
+    if not answer.strip():
         return 0.0
-
-    ans_norm = _normalize(answer)
-    q_norm = _normalize(question)
-
-    # ── Concept coverage ─────────────────────────────────────────────────────
 
     concept_hits = sum(
         1
         for concept in expected_concepts
-        if _normalize(concept) in ans_norm
+        if _concept_found(
+            answer,
+            concept,
+        )
     )
 
-    concept_score = concept_hits / max(len(expected_concepts), 1)
+    concept_score = (
+        concept_hits
+        / max(
+            len(expected_concepts),
+            1,
+        )
+    )
 
-    # ── Question term overlap ────────────────────────────────────────────────
-
-    q_terms = {
+    question_terms = {
         term
-        for term in q_norm.split()
+        for term in _normalize(
+            question
+        ).split()
         if len(term) > 3
     }
 
-    a_terms = set(ans_norm.split())
-
-    overlap = len(q_terms & a_terms) / max(len(q_terms), 1)
-
-    # ── Length heuristic ─────────────────────────────────────────────────────
-
-    length_score = min(
-        len(answer.split()) / 40.0,
-        1.0,
+    answer_terms = set(
+        _normalize(
+            answer
+        ).split()
     )
 
-    return (
-        0.4 * concept_score
-        + 0.3 * overlap
-        + 0.3 * length_score
+    overlap = (
+        len(
+            question_terms
+            & answer_terms
+        )
+        / max(
+            len(question_terms),
+            1,
+        )
     )
 
+    # Do not reward verbosity too heavily.
+    answer_length = len(
+        answer.split()
+    )
+
+    if answer_length >= 20:
+        length_score = 1.0
+
+    elif answer_length >= 10:
+        length_score = 0.75
+
+    elif answer_length >= 5:
+        length_score = 0.5
+
+    else:
+        length_score = 0.25
+
+    score = (
+        0.55 * concept_score
+        + 0.30 * overlap
+        + 0.15 * length_score
+    )
+
+    return round(
+        min(
+            score,
+            1.0,
+        ),
+        4,
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# GROUNDEDNESS
+# ═════════════════════════════════════════════════════════════════════════════
 
 def calculate_groundedness(
     answer: str,
     retrieved_docs: List[Any],
 ) -> float:
-    """
-    Approximate groundedness.
 
-    For every non-trivial sentence in the answer, checks whether
-    a substantial portion of its content words appear in the
-    retrieved context.
-    """
-
-    if not answer or not retrieved_docs:
+    if (
+        not answer.strip()
+        or not retrieved_docs
+    ):
         return 0.0
 
     context = " ".join(
-        doc.page_content
-        if hasattr(doc, "page_content")
-        else str(doc)
+        _doc_text(doc)
         for doc in retrieved_docs
     )
 
-    context_norm = _normalize(context)
+    context_norm = _normalize(
+        context
+    )
 
-    # Split answer into sentences.
-    sentences = re.split(r"[.!?]+", answer)
+    sentences = re.split(
+        r"[.!?]+",
+        answer,
+    )
 
     sentences = [
         sentence.strip()
         for sentence in sentences
-        if len(sentence.strip().split()) > 4
+        if len(
+            sentence.strip().split()
+        ) >= 5
     ]
 
-    # Very short answers receive a neutral score.
     if not sentences:
         return 0.5
 
-    grounded = 0
+    grounded_count = 0
 
     for sentence in sentences:
 
         words = [
             word
-            for word in _normalize(sentence).split()
+            for word in _normalize(
+                sentence
+            ).split()
             if len(word) > 3
         ]
 
         if not words:
             continue
 
-        # A sentence is considered grounded when at least 40%
-        # of its content words appear in the retrieved context.
         hits = sum(
             1
             for word in words
             if word in context_norm
         )
 
-        if hits / len(words) >= 0.4:
-            grounded += 1
+        ratio = (
+            hits
+            / len(words)
+        )
 
-    return grounded / len(sentences)
+        if ratio >= 0.40:
+            grounded_count += 1
+
+    return round(
+        grounded_count
+        / len(sentences),
+        4,
+    )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LLM-as-judge
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# LLM JUDGE
+# ═════════════════════════════════════════════════════════════════════════════
 
 JUDGE_SYSTEM = """
-You are an evaluation judge for a Retrieval-Augmented Generation system.
+You are an expert evaluator of a Retrieval-Augmented Generation system.
 
-You will be given:
+Evaluate:
 
 QUESTION
 RETRIEVED CONTEXT
 GENERATED ANSWER
 
-Score the following three metrics from 0.0 to 1.0:
+Return ONLY valid JSON.
 
-1. context_relevance
-   How relevant is the retrieved context to the question?
-
-2. answer_relevance
-   How well does the answer address the question?
-
-3. groundedness
-   How well is the answer supported by the retrieved context?
-   Penalize unsupported claims and hallucinations.
-
-Reply with ONLY a valid JSON object.
-Do not include markdown.
-Do not include explanations.
-
-Example:
 {
-    "context_relevance": 0.0,
-    "answer_relevance": 0.0,
-    "groundedness": 0.0
+  "context_relevance": 0.0,
+  "answer_relevance": 0.0,
+  "groundedness": 0.0
 }
+
+Scoring:
+
+context_relevance:
+How useful and relevant is the retrieved context for answering the question?
+
+answer_relevance:
+How directly and completely does the answer answer the question?
+
+groundedness:
+How strongly is the answer supported by the retrieved context?
+Penalize unsupported claims and hallucinations.
+
+Scores must be between 0.0 and 1.0.
 """
 
 
@@ -290,139 +675,162 @@ async def llm_judge(
     context: str,
     answer: str,
 ) -> Dict[str, float]:
-    """
-    Optional higher-quality evaluation using the same Ollama LLM.
-    """
 
     try:
 
         engine = get_rag_engine()
 
-        user = (
+        user_prompt = (
             f"QUESTION:\n{question}\n\n"
-            f"RETRIEVED CONTEXT:\n{context[:3000]}\n\n"
-            f"GENERATED ANSWER:\n{answer[:2000]}"
+            f"RETRIEVED CONTEXT:\n{context[:6000]}\n\n"
+            f"GENERATED ANSWER:\n{answer[:3000]}"
         )
 
         raw = await engine._call_llm(
             JUDGE_SYSTEM,
-            user,
+            user_prompt,
         )
 
-        raw = raw.strip()
+        data = json.loads(
+            raw.strip()
+        )
 
-        # Handle accidental markdown code fences.
-        if "```" in raw:
-
-            for part in raw.split("```"):
-
-                part = part.strip()
-
-                if part.startswith("json"):
-                    part = part[4:].strip()
-
-                if part.startswith("{"):
-                    raw = part
-                    break
-
-        data = json.loads(raw)
-
-        return {
+        result = {
             "context_relevance": float(
-                data.get("context_relevance", 0.5)
+                data.get(
+                    "context_relevance",
+                    0.5,
+                )
             ),
             "answer_relevance": float(
-                data.get("answer_relevance", 0.5)
+                data.get(
+                    "answer_relevance",
+                    0.5,
+                )
             ),
             "groundedness": float(
-                data.get("groundedness", 0.5)
+                data.get(
+                    "groundedness",
+                    0.5,
+                )
             ),
         }
 
-    except Exception as e:
+        return {
+            key: max(
+                0.0,
+                min(
+                    1.0,
+                    value,
+                ),
+            )
+            for key, value
+            in result.items()
+        }
+
+    except Exception as exc:
 
         logger.warning(
-            f"LLM judge failed, "
-            f"falling back to lexical metrics: {e}"
+            "LLM judge failed: %s",
+            exc,
         )
 
         return {}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Single question evaluation
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# SINGLE QUESTION
+# ═════════════════════════════════════════════════════════════════════════════
 
 async def evaluate_single(
     item: Dict[str, Any],
-    use_llm_judge: bool = False,
+    use_llm_judge: bool = True,
     k: int = 5,
 ) -> Dict[str, Any]:
-    """
-    Run one evaluation item through the existing RAG pipeline.
-    """
 
-    question = item["question"]
+    question = item[
+        "question"
+    ]
 
     expected = item.get(
         "expected_concepts",
         [],
     )
 
-    qid = item["id"]
+    qid = item[
+        "id"
+    ]
 
-    logger.info(
-        f"Evaluating {qid}: {question[:60]}…"
+    category = item.get(
+        "category",
+        "",
     )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 1. Retrieval
-    # ─────────────────────────────────────────────────────────────────────────
+    logger.info(
+        "Evaluating %s: %s",
+        qid,
+        question,
+    )
+
+    # ═════════════════════════════════════════════════════════════════════
+    # IMPORTANT:
+    #
+    # DO NOT hard-filter by category here.
+    #
+    # The evaluation dataset contains cross-document questions.
+    # ═════════════════════════════════════════════════════════════════════
 
     vs = get_vector_store()
 
-    retrieved_docs = vs.similarity_search(
-        question,
-        k=k,
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # 2. Build context
-    # ─────────────────────────────────────────────────────────────────────────
-
-    context_parts = []
-
-    for doc in retrieved_docs:
-
-        content = (
-            doc.page_content
-            if hasattr(doc, "page_content")
-            else str(doc)
+    retrieved_docs = (
+        vs.enhanced_retrieval(
+            question,
+            k=k,
+            use_mmr=False,
         )
+    )
 
-        context_parts.append(
-            content[:800]
+    # If retrieval returns fewer than k documents,
+    # keep whatever semantic results are available.
+    #
+    # We intentionally do NOT perform a category-filtered search.
+
+    context_parts = [
+        _doc_text(doc)
+        for doc in retrieved_docs
+    ]
+
+    context = (
+        "\n\n---\n\n".join(
+            context_parts
         )
-
-    context = "\n\n".join(
-        context_parts
     )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 3. Generation
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # GENERATION
+    # ═════════════════════════════════════════════════════════════════════
 
-    system_prompt = (
-        "You are an educational assistant for EduRAGX. "
-        "Answer the question using ONLY the provided context. "
-        "If the context does not contain enough information, say so. "
-        "Be concise and factual."
-    )
+    system_prompt = """
+You are an educational assistant for EduRAGX.
+
+Answer the user's question using ONLY the provided knowledge context.
+
+Rules:
+
+1. Do not invent information.
+2. Do not use external knowledge.
+3. If the context is insufficient, clearly say that.
+4. Preserve exact numbers, percentages and names.
+5. Answer directly.
+6. Use bullet points when useful.
+"""
 
     user_prompt = (
-        f"Context:\n{context}\n\n"
-        f"Question: {question}\n\n"
-        f"Answer:"
+        f"KNOWLEDGE CONTEXT:\n"
+        f"{context}\n\n"
+        f"QUESTION:\n"
+        f"{question}\n\n"
+        f"ANSWER:"
     )
 
     engine = get_rag_engine()
@@ -434,44 +842,56 @@ async def evaluate_single(
             user_prompt,
         )
 
-    except Exception as e:
+    except Exception as exc:
 
         logger.error(
-            f"Generation failed for {qid}: {e}"
+            "Generation failed for %s: %s",
+            qid,
+            exc,
         )
 
-        answer = f"[Generation error: {e}]"
+        answer = (
+            f"[Generation error: {exc}]"
+        )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 4. Calculate metrics
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # METRICS
+    # ═════════════════════════════════════════════════════════════════════
 
-    precision = calculate_precision_at_k(
-        retrieved_docs,
-        expected,
-        k=k,
+    precision = (
+        calculate_precision_at_k(
+            retrieved_docs,
+            expected,
+            k=k,
+        )
     )
 
-    ctx_rel = calculate_context_relevance(
-        question,
-        retrieved_docs,
-        expected,
+    context_relevance = (
+        calculate_context_relevance(
+            question,
+            retrieved_docs,
+            expected,
+        )
     )
 
-    ans_rel = calculate_answer_relevance(
-        question,
-        answer,
-        expected,
+    answer_relevance = (
+        calculate_answer_relevance(
+            question,
+            answer,
+            expected,
+        )
     )
 
-    grounded = calculate_groundedness(
-        answer,
-        retrieved_docs,
+    groundedness = (
+        calculate_groundedness(
+            answer,
+            retrieved_docs,
+        )
     )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 5. Optional LLM judge
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # LLM JUDGE
+    # ═════════════════════════════════════════════════════════════════════
 
     if use_llm_judge:
 
@@ -483,116 +903,105 @@ async def evaluate_single(
 
         if judge_scores:
 
-            ctx_rel = judge_scores.get(
-                "context_relevance",
-                ctx_rel,
+            context_relevance = (
+                judge_scores[
+                    "context_relevance"
+                ]
             )
 
-            ans_rel = judge_scores.get(
-                "answer_relevance",
-                ans_rel,
+            answer_relevance = (
+                judge_scores[
+                    "answer_relevance"
+                ]
             )
 
-            grounded = judge_scores.get(
-                "groundedness",
-                grounded,
+            groundedness = (
+                judge_scores[
+                    "groundedness"
+                ]
             )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 6. Overall score
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # OVERALL
+    # ═════════════════════════════════════════════════════════════════════
 
     overall = (
         precision
-        + ctx_rel
-        + ans_rel
-        + grounded
+        + context_relevance
+        + answer_relevance
+        + groundedness
     ) / 4.0
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # 7. Return result
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # RETURN
+    # ═════════════════════════════════════════════════════════════════════
 
     return {
         "id": qid,
         "question": question,
-        "category": item.get("category", ""),
-        "num_retrieved": len(retrieved_docs),
-
+        "category": category,
+        "num_retrieved": len(
+            retrieved_docs
+        ),
         "precision_at_5": round(
             precision,
             4,
         ),
-
         "context_relevance": round(
-            ctx_rel,
+            context_relevance,
             4,
         ),
-
         "answer_relevance": round(
-            ans_rel,
+            answer_relevance,
             4,
         ),
-
         "groundedness": round(
-            grounded,
+            groundedness,
             4,
         ),
-
         "overall_score": round(
             overall,
             4,
         ),
-
         "answer_preview": (
             answer[:300]
-            + ("…" if len(answer) > 300 else "")
-        ),
-
-        "retrieved_titles": [
-            (
-                doc.metadata.get(
-                    "title",
-                    "unknown",
-                )
-                if hasattr(doc, "metadata")
-                else "unknown"
+            + (
+                "..."
+                if len(answer) > 300
+                else ""
             )
+        ),
+        "retrieved_titles": [
+            doc.metadata.get(
+                "title",
+                "unknown",
+            )
+            if hasattr(
+                doc,
+                "metadata",
+            )
+            else "unknown"
             for doc in retrieved_docs
         ],
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Full evaluation
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# FULL EVALUATION
+# ═════════════════════════════════════════════════════════════════════════════
 
 async def run_rag_evaluation(
-    use_llm_judge: bool = False,
+    use_llm_judge: bool = True,
     max_questions: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    Run the full evaluation suite.
-
-    Results are always written to:
-
-        evaluation/results/evaluation.json
-        evaluation/results/evaluation.csv
-
-    Existing files are updated rather than creating new timestamped files.
-    """
 
     logger.info(
         "======================================================="
     )
 
     logger.info(
-        "Starting EduRAGX RAG Evaluation..."
+        "Starting EduRAGX RAG Evaluation"
     )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Load dataset
-    # ─────────────────────────────────────────────────────────────────────────
 
     dataset = EVALUATION_DATASET
 
@@ -602,11 +1011,9 @@ async def run_rag_evaluation(
             :max_questions
         ]
 
-    results: List[Dict[str, Any]] = []
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Evaluate each question
-    # ─────────────────────────────────────────────────────────────────────────
+    results: List[
+        Dict[str, Any]
+    ] = []
 
     for item in dataset:
 
@@ -615,50 +1022,54 @@ async def run_rag_evaluation(
             result = await evaluate_single(
                 item,
                 use_llm_judge=use_llm_judge,
+                k=5,
             )
 
-            results.append(result)
+            results.append(
+                result
+            )
 
-        except Exception as e:
+        except Exception as exc:
 
             logger.exception(
-                f"Failed on {item['id']}: {e}"
+                "Failed on %s: %s",
+                item["id"],
+                exc,
             )
 
-            results.append({
-                "id": item["id"],
-                "question": item["question"],
-                "category": item.get(
-                    "category",
-                    "",
-                ),
-                "num_retrieved": 0,
-                "error": str(e),
-                "precision_at_5": 0.0,
-                "context_relevance": 0.0,
-                "answer_relevance": 0.0,
-                "groundedness": 0.0,
-                "overall_score": 0.0,
-                "answer_preview": "",
-            })
+            results.append(
+                {
+                    "id": item["id"],
+                    "question": item["question"],
+                    "category": item.get(
+                        "category",
+                        "",
+                    ),
+                    "num_retrieved": 0,
+                    "precision_at_5": 0.0,
+                    "context_relevance": 0.0,
+                    "answer_relevance": 0.0,
+                    "groundedness": 0.0,
+                    "overall_score": 0.0,
+                    "answer_preview": "",
+                    "error": str(exc),
+                }
+            )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Aggregate metrics
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # AVERAGES
+    # ═════════════════════════════════════════════════════════════════════
 
-    n = len(results)
-
-    def avg(key: str) -> float:
+    def average(
+        key: str,
+    ) -> float:
 
         values = [
             result[key]
             for result in results
-            if (
-                key in result
-                and isinstance(
-                    result[key],
-                    (int, float),
-                )
+            if isinstance(
+                result.get(key),
+                (int, float),
             )
         ]
 
@@ -666,63 +1077,46 @@ async def run_rag_evaluation(
             return 0.0
 
         return round(
-            sum(values) / len(values),
+            sum(values)
+            / len(values),
             4,
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Summary
-    # ─────────────────────────────────────────────────────────────────────────
-
     summary = {
-
-        "total_questions": n,
-
-        "precision_at_5": avg(
+        "total_questions": len(
+            results
+        ),
+        "precision_at_5": average(
             "precision_at_5"
         ),
-
-        "context_relevance": avg(
+        "context_relevance": average(
             "context_relevance"
         ),
-
-        "answer_relevance": avg(
+        "answer_relevance": average(
             "answer_relevance"
         ),
-
-        "groundedness": avg(
+        "groundedness": average(
             "groundedness"
         ),
-
-        "overall_score": avg(
+        "overall_score": average(
             "overall_score"
         ),
-
         "timestamp": datetime.now().isoformat(),
-
         "model": settings.llm_model,
-
         "embedding_model": settings.embedding_model,
-
         "retrieval_top_k": settings.retrieval_top_k,
-
+        "retrieval_final_k": settings.retrieval_final_k,
+        "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
+        "use_mmr": settings.use_mmr,
         "used_llm_judge": use_llm_judge,
-
+        "knowledge_base_version": settings.knowledge_base_version,
         "results": results,
     }
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Save JSON
-    # ─────────────────────────────────────────────────────────────────────────
-    #
-    # IMPORTANT:
-    # No timestamp is used in the filename.
-    #
-    # Every run updates:
-    #
-    #     evaluation.json
-    #
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # SAVE JSON
+    # ═════════════════════════════════════════════════════════════════════
 
     try:
 
@@ -740,27 +1134,20 @@ async def run_rag_evaluation(
             )
 
         logger.info(
-            f"JSON results updated → {JSON_PATH.name}"
+            "Evaluation JSON saved: %s",
+            JSON_PATH,
         )
 
-    except Exception as e:
+    except Exception as exc:
 
-        logger.error(
-            f"Failed to save JSON results: {e}"
+        logger.exception(
+            "Failed to save evaluation JSON: %s",
+            exc,
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Save CSV
-    # ─────────────────────────────────────────────────────────────────────────
-    #
-    # IMPORTANT:
-    # No timestamp is used in the filename.
-    #
-    # Every run updates:
-    #
-    #     evaluation.csv
-    #
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # SAVE CSV
+    # ═════════════════════════════════════════════════════════════════════
 
     fieldnames = [
         "id",
@@ -794,21 +1181,25 @@ async def run_rag_evaluation(
 
             for result in results:
 
-                writer.writerow(result)
+                writer.writerow(
+                    result
+                )
 
         logger.info(
-            f"CSV results updated → {CSV_PATH.name}"
+            "Evaluation CSV saved: %s",
+            CSV_PATH,
         )
 
-    except Exception as e:
+    except Exception as exc:
 
-        logger.error(
-            f"Failed to save CSV results: {e}"
+        logger.exception(
+            "Failed to save evaluation CSV: %s",
+            exc,
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Final logging
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # LOG SUMMARY
+    # ═════════════════════════════════════════════════════════════════════
 
     logger.info(
         "======================================================="
@@ -819,26 +1210,41 @@ async def run_rag_evaluation(
     )
 
     logger.info(
-        "Overall RAG Quality Score: "
-        f"{summary['overall_score']:.2%}"
+        "Precision@5       : %.2f%%",
+        summary["precision_at_5"] * 100,
     )
 
     logger.info(
-        f"Results saved → "
-        f"{JSON_PATH.name} / {CSV_PATH.name}"
+        "Context Relevance : %.2f%%",
+        summary["context_relevance"] * 100,
+    )
+
+    logger.info(
+        "Answer Relevance  : %.2f%%",
+        summary["answer_relevance"] * 100,
+    )
+
+    logger.info(
+        "Groundedness      : %.2f%%",
+        summary["groundedness"] * 100,
+    )
+
+    logger.info(
+        "Overall RAG Score : %.2f%%",
+        summary["overall_score"] * 100,
     )
 
     logger.info(
         "======================================================="
     )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Add file information to returned summary
-    # ─────────────────────────────────────────────────────────────────────────
-
     summary["files"] = {
-        "json": str(JSON_PATH),
-        "csv": str(CSV_PATH),
+        "json": str(
+            JSON_PATH
+        ),
+        "csv": str(
+            CSV_PATH
+        ),
     }
 
     return summary

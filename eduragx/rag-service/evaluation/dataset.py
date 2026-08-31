@@ -1,8 +1,13 @@
 """
-Evaluation dataset for EduRAGX RAG service.
-Questions are deliberately aligned with the 4 documents currently loaded
-in the knowledge base (Assessment Credit Value System, Teaching Strategies,
-Career Paths, Student Support Framework).
+EduRAGX RAG Evaluation Dataset.
+
+The dataset contains:
+1. Single-document questions
+2. Cross-document questions
+
+Questions are evaluated using global semantic retrieval because
+some questions intentionally require information from multiple
+knowledge-base categories.
 """
 
 EVALUATION_DATASET = [
