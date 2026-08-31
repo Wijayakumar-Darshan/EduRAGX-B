@@ -115,3 +115,33 @@ async def add_document(request: DocumentUploadRequest):
 @router.get("/knowledge-base/stats")
 async def knowledge_base_stats():
     return {"total_documents":get_vector_store().get_document_count(),"status":"active"}
+
+
+# ── RAG Evaluation (research module) ─────────────────────────────────────────
+@router.post("/evaluation/run")
+async def run_evaluation(use_llm_judge: bool = False, max_questions: int = None):
+    """
+    Run the full RAG evaluation suite against the current knowledge base
+    and production retrieval + generation pipeline.
+
+    Query params (optional):
+      - use_llm_judge: bool  (default False) – use LLM-as-judge for higher quality scores
+      - max_questions: int   – limit number of questions (useful for quick tests)
+
+    Returns aggregate metrics + per-question results and saves CSV/JSON under
+    evaluation/results/.
+    """
+    try:
+        from evaluation.evaluator import run_rag_evaluation
+        results = await run_rag_evaluation(
+            use_llm_judge=use_llm_judge,
+            max_questions=max_questions,
+        )
+        return {
+            "success": True,
+            "message": "Evaluation completed successfully",
+            **results,
+        }
+    except Exception as e:
+        logger.error(f"Evaluation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

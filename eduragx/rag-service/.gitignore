@@ -46,3 +46,5 @@ dist/
 
 # Jupyter
 .ipynb_checkpoints/
+
+evaluation/results/
